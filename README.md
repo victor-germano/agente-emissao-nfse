@@ -5,6 +5,14 @@ Protótipo do agente que implementa o fluxo **TO-BE** descrito em
 pagamento, associa automaticamente paciente + médico, emite a NFS-e junto
 à Prefeitura de Marília, envia o PDF por e-mail e notifica o App.
 
+## Telas
+
+Painel local de simulação, com alertas, métricas e as notas processadas em cada cenário (pagamento normal, prefeitura instável, nota travada, pagamento perdido e estorno):
+
+![Painel de simulação](docs/screenshots/painel-simulacao.png)
+
+A página de visão geral do projeto está em [`docs/screenshots/visao-geral.png`](docs/screenshots/visao-geral.png).
+
 ## Por que a maioria das bordas é mockada (mas a persistência é real)
 
 Este é um teste técnico, sem credenciais reais de Stripe/Prefeitura de
@@ -426,3 +434,7 @@ sempre contra as implementações in-memory — não tocam o Supabase real.
 - Um dashboard interno de verdade para operação (com login próprio) — o
   painel em `public/index.html` é deliberadamente uma ferramenta de
   demonstração/teste local, não uma interface para o time financeiro.
+
+## Licença
+
+MIT. Ver [LICENSE](LICENSE).
