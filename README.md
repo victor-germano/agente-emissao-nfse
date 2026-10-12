@@ -1,5 +1,7 @@
 # Agente de emissão de Notas Fiscais — VYX
 
+[![CI](https://github.com/victor-germano/agente-emissao-nfse/actions/workflows/ci.yml/badge.svg)](https://github.com/victor-germano/agente-emissao-nfse/actions/workflows/ci.yml)
+
 Protótipo do agente que implementa o fluxo **TO-BE** descrito em
 `Processo de Emissão de Notas Fiscais — VYX`: recebe o evento de
 pagamento, associa automaticamente paciente + médico, emite a NFS-e junto
