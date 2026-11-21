@@ -1,82 +1,82 @@
-# Agente de Emissão NFS-e
+# NFS-e Autonomous Emission Agent
 
 [![CI](https://github.com/victor-germano/agente-emissao-nfse/actions/workflows/ci.yml/badge.svg)](https://github.com/victor-germano/agente-emissao-nfse/actions/workflows/ci.yml)
 
-> **Agente autônomo de emissão fiscal — recebe evento de pagamento, associa automaticamente prestador + tomador, emite NFS-e junto à Prefeitura, envia PDF por e-mail e notifica o App. Zero intervenção manual no fluxo feliz.**
+> **Autonomous fiscal agent — receives a payment event, automatically matches service provider + client, issues the NFS-e (Brazilian service invoice) with the city hall, sends the PDF by email and notifies the app. Zero manual intervention on the happy path.**
 
 ---
 
-## Arquitetura
+## Architecture
 
 ```
-POST /webhooks/stripe     POST /webhooks/gateway2 (Pix/parcelado)
+POST /webhooks/stripe     POST /webhooks/gateway2 (Pix/installments)
         │                               │
         └───────────────┬───────────────┘
                         ▼
-           normaliza para PaymentEvent
+           normalizes to PaymentEvent
                         ▼
          InvoiceEmissionService.processPayment
                         │
        ┌────────────────┼──────────────────┐
        ▼                ▼                  ▼
-  idempotência   associa prestador   cria Invoice "processing"
- (por externalId)   + tomador
+  idempotency    matches provider    creates Invoice "processing"
+ (by externalId)    + client
                         │
                         ▼
-      NFSeClient.emit()  com retry/backoff exponencial
+      NFSeClient.emit()  with exponential retry/backoff
                         │
              ┌──────────┴──────────┐
              ▼                     ▼
-        sucesso: "issued"     falhas esgotadas: "failed"
-             │                (lastError + auditoria)
+        success: "issued"     retries exhausted: "failed"
+             │                (lastError + audit trail)
              ▼
     EmailSender + AppNotifier
 ```
 
-**Decisão de arquitetura:** o app recebe webhooks diretamente (sem intermediário como n8n). Lógica com idempotência atômica e retry com estado em um orquestrador visual vira um gargalo de testabilidade — código versionado e testado tem vantagem real aqui.
+**Architecture decision:** the app receives webhooks directly (no intermediary like n8n). Logic with atomic idempotency and stateful retry in a visual orchestrator becomes a testability bottleneck — versioned, tested code has a real advantage here.
 
 ---
 
-## Resiliência — o que está implementado
+## Resilience — What's Implemented
 
-| Mecanismo | O que faz |
+| Mechanism | What it does |
 |---|---|
-| **Idempotência atômica** | `findOrCreate` com mutex em memória + `UNIQUE(payment_external_id)` no Postgres — corrida de webhooks duplicados é impossível |
-| **Retry com backoff exponencial** | Configurable em `NFSE_MOCK_FAILURE_RATE` / tentativas; erros não-retryable (ex: credencial inválida) interrompem imediatamente |
-| **Ack rápido** | `POST /webhooks/stripe` responde `202` com invoice em `processing` imediatamente; emissão continua em background |
-| **Recuperação de travadas** | `recoverStuckInvoices` varre invoices presas em `processing` (crash mid-flight) e retenta — roda periódicamente + `POST /debug/recover-stuck` |
-| **Reconciliação** | `ReconciliationService` compara pagamentos aprovados vs. invoices existentes para pegar webhooks perdidos |
-| **Cancelamento por estorno** | `charge.refunded` localiza a invoice, cancela NFS-e emitida e notifica o tomador por e-mail |
-| **Graceful shutdown** | `SIGTERM`/`SIGINT` espera emissões em voo terminarem (timeout 5s) antes de encerrar |
-| **Health check real** | `GET /health` testa conectividade com Supabase; responde `503` se banco inacessível |
-| **Autenticação nos endpoints** | `requireApiKey` protege `/invoices`, `/alerts`, `/metrics` e `/debug/*` via `Authorization: Bearer`; comparação em tempo constante |
-| **Rotas de debug bloqueadas em produção** | `NODE_ENV=production` desregistra todos os `/debug/*` (404) |
-| **Auditoria imutável** | Log append-only de cada transição de estado por invoice — consultável via `GET /invoices/:id/audit` |
-| **Logging estruturado** | JSON por evento (`{level, message, context, timestamp}`) consumível por Datadog/ELK/CloudWatch |
+| **Atomic idempotency** | `findOrCreate` with in-memory mutex + `UNIQUE(payment_external_id)` in Postgres — duplicate webhook races are impossible |
+| **Exponential backoff retry** | Configurable via `NFSE_MOCK_FAILURE_RATE` / attempts; non-retryable errors (e.g. invalid credentials) abort immediately |
+| **Fast ack** | `POST /webhooks/stripe` responds `202` with invoice in `processing` immediately; emission continues in background |
+| **Stuck invoice recovery** | `recoverStuckInvoices` scans invoices stuck in `processing` (crash mid-flight) and retries — runs periodically + `POST /debug/recover-stuck` |
+| **Reconciliation** | `ReconciliationService` compares approved payments vs. existing invoices to catch missed webhooks |
+| **Chargeback cancellation** | `charge.refunded` locates the invoice, cancels the issued NFS-e and notifies the client by email |
+| **Graceful shutdown** | `SIGTERM`/`SIGINT` waits for in-flight emissions to finish (5s timeout) before exiting |
+| **Real health check** | `GET /health` tests Supabase connectivity; responds `503` if DB unreachable |
+| **Endpoint authentication** | `requireApiKey` protects `/invoices`, `/alerts`, `/metrics` and `/debug/*` via `Authorization: Bearer`; constant-time comparison |
+| **Debug routes blocked in production** | `NODE_ENV=production` deregisters all `/debug/*` (404) |
+| **Immutable audit trail** | Append-only log of each state transition per invoice — queryable via `GET /invoices/:id/audit` |
+| **Structured logging** | JSON per event (`{level, message, context, timestamp}`) consumable by Datadog/ELK/CloudWatch |
 
 ---
 
 ## Stack
 
-| Camada | Tecnologia |
+| Layer | Technology |
 |---|---|
 | Runtime | Node.js · TypeScript |
 | API | Fastify |
-| Persistência | Supabase (PostgreSQL gerenciado) |
-| Pagamentos | Stripe webhooks (assinatura verificada) |
-| Métricas | `GET /metrics` — notas emitidas/falhas/canceladas/recuperadas + duração média |
+| Persistence | Supabase (managed PostgreSQL) |
+| Payments | Stripe webhooks (signature verified) |
+| Metrics | `GET /metrics` — issued/failed/cancelled/recovered invoices + average duration |
 
 ---
 
-## Integração com Prefeitura
+## City Hall Integration
 
-A API SOAP oficial de Marília (`marilia.sigiss.com.br/marilia/ws/sigiss_ws.php`) existe e tem campo nativo de idempotência (`id_sis_legado`) compatível com este design. A implementação atual usa `PrefeituraMariliaMockClient` (mesma interface) — trocar por `FocusNfeClient` ou API direta é implementar `NFSeClient` e injetar em `src/index.ts`.
+The official SOAP API (`marilia.sigiss.com.br/marilia/ws/sigiss_ws.php`) exists and has a native idempotency field (`id_sis_legado`) compatible with this design. The current implementation uses `PrefeituraMariliaMockClient` (same interface) — switching to `FocusNfeClient` or the direct API means implementing `NFSeClient` and injecting it in `src/index.ts`.
 
-**Recomendação prática para produção:** gateway como Focus NFe (único com suporte a Marília verificado explicitamente, sandbox gratuito, sem trava de contrato) em vez de API direta — absorve o custo de acompanhar a transição nacional da NFS-e (Lei Complementar 214/2025).
+**Practical production recommendation:** a gateway like Focus NFe (only one with explicitly verified Marília support, free sandbox, no lock-in) rather than the direct API — absorbs the cost of tracking Brazil's national NFS-e transition (Lei Complementar 214/2025).
 
 ---
 
-## Rodando localmente
+## Running locally
 
 ```bash
 npm install
@@ -84,38 +84,38 @@ cp .env.example .env
 npm run dev        # http://localhost:3000
 ```
 
-Sem `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` configuradas, o app usa implementações in-memory — funciona para desenvolvimento local sem depender de rede.
+Without `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` configured, the app uses in-memory implementations — works for local development without network dependencies.
 
-**Para ativar persistência real:** preencha `SUPABASE_SERVICE_ROLE_KEY` no `.env` (obtida no dashboard do Supabase, projeto já criado e com schema aplicado).
+**To enable real persistence:** fill in `SUPABASE_SERVICE_ROLE_KEY` in `.env` (from the Supabase dashboard, project already created with schema applied).
 
-**Painel visual:** `http://localhost:3000` — simula pagamentos, força falhas, monitora métricas e auditoria em tempo real.
+**Visual dashboard:** `http://localhost:3000` — simulate payments, force failures, monitor metrics and audit trail in real time.
 
 ---
 
-## Testes
+## Tests
 
 ```bash
 npm run typecheck
 npm test
 ```
 
-Cobrem: retry/backoff, idempotência (incluindo concorrência via `Promise.all`), ack desacoplado, recuperação de travadas, estorno/cancelamento, reconciliação, assinatura Stripe (válida/adulterada/expirada), autenticação por API key, health check, erros não-retryable.
+Cover: retry/backoff, idempotency (including concurrency via `Promise.all`), decoupled ack, stuck invoice recovery, chargeback/cancellation, reconciliation, Stripe signature (valid/tampered/expired), API key auth, health check, non-retryable errors.
 
-Rodam sempre contra implementações in-memory — não tocam o Supabase real.
+Always run against in-memory implementations — never touch real Supabase.
 
 ---
 
-## Demo end-to-end
+## End-to-end Demo
 
 ```bash
 npm run dev              # terminal 1
 bash scripts/demo.sh      # terminal 2
 ```
 
-Dispara em sequência: pagamento Stripe, Pix, prefeitura instável (retry), dado inconsistente, nota travada + recuperação, pagamento perdido + reconciliação, estorno. Imprime estado final de `/invoices`, `/alerts` e `/metrics`.
+Fires in sequence: Stripe payment, Pix, unstable city hall (retry), inconsistent data, stuck invoice + recovery, missed payment + reconciliation, chargeback. Prints final state of `/invoices`, `/alerts` and `/metrics`.
 
 ---
 
-## Licença
+## License
 
 MIT
